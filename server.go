@@ -47,7 +47,6 @@ var accepted map[string]bool
 
 var ipmap map[Server]string
 var lockmap map[string]Server
-var lockreqmap map[string]Server
 
 //Workaround for demo.
 func createIPmap() {
@@ -65,6 +64,12 @@ func sendVotingReqToAll(serverid string, lockname string) {
 	}
 }
 
+func sendReleaseReqToAll(serverid string, lockname string) {
+	for _, ipaddr := range ipmap {
+		sendReqToOne(serverid, ipaddr, "lockReleased", lockname)
+	}
+}
+
 func sendReqToOne(serverid string, ipaddr string, reqType string, lockname string) {
 	client := &http.Client{}
 	//TODO move port number from here
@@ -72,7 +77,7 @@ func sendReqToOne(serverid string, ipaddr string, reqType string, lockname strin
 	req.Header.Set("DlockReqType", reqType)
 	req.Header.Set("Serverid", serverid)
 	req.Header.Set("Lockname", lockname)
-	log.Printf("Request = %v", req)
+	//	log.Printf("Request = %v", req)
 	resp, err := client.Do(req)
 	if err == nil {
 		defer resp.Body.Close()
@@ -86,7 +91,7 @@ func sendReply(ipaddr string, replyType string, lockname string) {
 	req, _ := http.NewRequest("POST", "http://"+ipaddr+":9000", nil)
 	req.Header.Set("Dlockreplytype", replyType)
 	req.Header.Set("Lockname", lockname)
-	log.Printf("Request = %v", req)
+	//log.Printf("Request = %v", req)
 	resp, err := client.Do(req)
 	if err == nil {
 		defer resp.Body.Close()
@@ -143,7 +148,7 @@ func setLog(logpath string) {
 }
 
 func requestedServer(id string) Server {
-	log.Printf("Request from server id %v\n", id)
+	//log.Printf("Request from server id %v\n", id)
 	return Server(id)
 }
 
@@ -181,6 +186,7 @@ func getserverid() string {
 }
 
 func handleVote(reqServer Server, lockname string) {
+	log.Printf("Got voting request from %v for lock  %v", reqServer, lockname)
 	serverid := getserverid()
 	value, exist := lockmap[lockname]
 	if exist && value != "" {
@@ -202,14 +208,16 @@ func handleKeepAlive(reqServer Server) {
 }
 
 func addAcceptVote(reqServer Server, lockname string) {
+	log.Printf("Accepted by %v lock %v", reqServer, lockname)
 	acceptVotes[lockname][reqServer] = true
 }
 func addRejectVote(reqServer Server, lockname string) {
+	log.Printf("Rejected by %v lock %v", reqServer, lockname)
 	rejectVotes[lockname][reqServer] = true
 }
 
 func handleLockRequest(lockname string) {
-	log.Printf("got request from app %v\n", lockname)
+	log.Printf("got request from client for lock : %v\n", lockname)
 	value, exist := lockmap[lockname]
 	if !exist {
 		acceptVotes[lockname] = make(map[Server]bool)
@@ -225,19 +233,30 @@ func handleLockRequest(lockname string) {
 	if accepted[lockname] {
 		sendReply("127.0.0.1", "lockAccept", lockname)
 	} else {
+		sendReleaseReqToAll(getserverid(), lockname)
 		sendReply("127.0.0.1", "lockReject", lockname)
 	}
 }
 
 func handleLockRelease(lockname string) {
-	log.Printf("Lock release %v", lockname)
+	log.Printf("Request for lock release: %v", lockname)
+	lockmap[lockname] = ""
+	sendReleaseReqToAll(getserverid(), lockname)
 	sendReply("127.0.0.1", "lockRel", lockname)
+}
+
+func releaseLock(reqServer Server, lockname string) {
+	value, _ := lockmap[lockname]
+	if value == reqServer {
+		log.Printf("Got request from %v to release lock %v ", reqServer, lockname)
+		lockmap[lockname] = ""
+	}
 }
 
 func mesgHandler(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Hello, %q", html.EscapeString(r.URL.Path))
 	headerAll := r.Header
-	log.Printf("header %v", headerAll)
+	//log.Printf("header %v", headerAll)
 	reqType := headerAll["Dlockreqtype"][0]
 	switch reqType {
 	case "lockReq":
@@ -258,6 +277,10 @@ func mesgHandler(w http.ResponseWriter, r *http.Request) {
 		reqServer := requestedServer(headerAll["Serverid"][0])
 		lockname := headerAll["Lockname"][0]
 		addRejectVote(reqServer, lockname)
+	case "lockReleased":
+		reqServer := requestedServer(headerAll["Serverid"][0])
+		lockname := headerAll["Lockname"][0]
+		releaseLock(reqServer, lockname)
 	case "keepAlive":
 		reqServer := requestedServer(headerAll["Serverid"][0])
 		handleKeepAlive(reqServer)
